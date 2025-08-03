@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -7,10 +7,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Clock, User, Phone, Settings, FileText } from "lucide-react";
+import { ArrowRight, Clock, User, Phone, Settings, FileText, MapPin } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-import LocationDetector from "@/components/LocationDetector";
+import EnhancedLocationDetector from "@/components/EnhancedLocationDetector";
 import PartsSelector from "@/components/PartsSelector";
 import PhotoUpload from "@/components/PhotoUpload";
 
@@ -21,6 +21,15 @@ interface LocationData {
 }
 
 const ServiceRequest = () => {
+  console.log('ServiceRequest component rendering...');
+  
+  // Add a test effect to check if component mounts
+  useEffect(() => {
+    console.log('ServiceRequest component mounted');
+    return () => {
+      console.log('ServiceRequest component unmounted');
+    };
+  }, []);
   const navigate = useNavigate();
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -37,6 +46,7 @@ const ServiceRequest = () => {
     customPart: "",
     needsInstallation: false,
     photos: [] as string[],
+    manualAddress: "",
   });
 
   const serviceTypes = [
@@ -48,6 +58,19 @@ const ServiceRequest = () => {
 
   const handleInputChange = (field: string, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleLocationSelect = (location: any) => {
+    setFormData(prev => ({
+      ...prev,
+      location: {
+        lat: location.lat,
+        lng: location.lng,
+        address: location.address || 'عنوان غير محدد',
+        neighborhood: location.neighborhood || 'منطقة غير محددة'
+      },
+      manualAddress: location.address || ''
+    }));
   };
 
   const validateForm = () => {
@@ -69,9 +92,11 @@ const ServiceRequest = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log('Form submitted'); // Debug log
     
     const error = validateForm();
     if (error) {
+      console.log('Validation error:', error); // Debug log
       toast({
         title: "خطأ في البيانات",
         description: error,
@@ -126,8 +151,26 @@ const ServiceRequest = () => {
     }
   };
 
+  // Add a test function to check navigation
+  const testNavigation = () => {
+    console.log('Navigation test - navigating to /confirmation');
+    navigate('/confirmation?order=TEST123');
+  };
+
   return (
     <div className="min-h-screen bg-background">
+      {/* Test Button - Temporary */}
+      <div className="fixed bottom-4 left-4 z-50">
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={testNavigation}
+          className="bg-yellow-100 text-yellow-800 hover:bg-yellow-200"
+        >
+          Test Navigation
+        </Button>
+      </div>
+      
       {/* Header */}
       <header className="border-b bg-white sticky top-0 z-50 shadow-soft">
         <div className="container mx-auto px-4 py-4">
@@ -196,15 +239,67 @@ const ServiceRequest = () => {
                 </div>
 
                 {/* Location Information */}
-                <LocationDetector
-                  onLocationChange={(location, isDifferentAddress) => {
-                    handleInputChange("location", location);
-                    handleInputChange("isDifferentAddress", isDifferentAddress);
-                  }}
-                  location={formData.location}
-                  isDifferentAddress={formData.isDifferentAddress}
-                  onDifferentAddressChange={(value) => handleInputChange("isDifferentAddress", value)}
-                />
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <MapPin className="w-5 h-5 text-primary" />
+                    <h3 className="text-lg font-semibold">تفاصيل الموقع</h3>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <EnhancedLocationDetector
+                      onLocationSelect={handleLocationSelect}
+                      initialLocation={formData.location}
+                    />
+                    
+                    {formData.location && (
+                      <div className="p-4 bg-muted/20 rounded-md">
+                        <p className="font-medium">الموقع المحدد:</p>
+                        <p className="text-sm text-muted-foreground">
+                          {formData.location.address || 'لا يوجد عنوان'}
+                        </p>
+                        <p className="text-xs mt-1 text-muted-foreground">
+                          الإحداثيات: {formData.location.lat?.toFixed(6)}, {formData.location.lng?.toFixed(6)}
+                        </p>
+                      </div>
+                    )}
+                    
+                    <div className="flex items-center space-x-2 rtl:space-x-reverse">
+                      <input
+                        type="checkbox"
+                        id="isDifferentAddress"
+                        checked={formData.isDifferentAddress}
+                        onChange={(e) => handleInputChange("isDifferentAddress", e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                      />
+                      <Label htmlFor="isDifferentAddress" className="text-sm font-medium">
+                        عنوان مختلف عن الموقع الحالي
+                      </Label>
+                    </div>
+                    
+                    {formData.isDifferentAddress && (
+                      <div>
+                        <Label htmlFor="alternateAddress">العنوان البديل</Label>
+                        <Textarea
+                          id="alternateAddress"
+                          value={formData.manualAddress}
+                          onChange={(e) => {
+                            handleInputChange("manualAddress", e.target.value);
+                            // Update location address if manual address is changed
+                            if (formData.location) {
+                              handleInputChange("location", {
+                                ...formData.location,
+                                address: e.target.value
+                              });
+                            }
+                          }}
+                          placeholder="أدخل العنوان البديل بالتفصيل"
+                          className="mt-1"
+                          rows={3}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {/* Service Information */}
                 <div className="space-y-4">

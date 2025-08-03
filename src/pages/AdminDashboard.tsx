@@ -6,22 +6,31 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import TechnicianAssignment from "@/components/TechnicianAssignment";
+import { formatDistanceToNow } from "date-fns";
+import { ar } from 'date-fns/locale/ar';
+import { motion, AnimatePresence } from "framer-motion";
 import { 
   Settings, 
   MapPin, 
   Clock, 
   User, 
   Phone, 
-  Package, 
-  Wrench,
-  Eye,
-  Edit,
-  MessageSquare,
+  Wrench, 
+  Eye, 
+  RefreshCw, 
+  UserPlus, 
   Calendar,
-  RefreshCw
+  MessageSquare,
+  Check,
+  X,
+  AlertCircle,
+  Package,
+  Edit
 } from "lucide-react";
 
 interface ServiceRequest {
@@ -31,7 +40,12 @@ interface ServiceRequest {
   service_type: string;
   issue_description: string;
   preferred_time: string;
-  location: any;
+  location: {
+    lat: number;
+    lng: number;
+    neighborhood?: string;
+    address?: string;
+  };
   is_different_address: boolean;
   needs_parts: boolean;
   part_type?: string;
@@ -40,9 +54,28 @@ interface ServiceRequest {
   photo_urls: string[];
   status: string;
   assigned_technician?: string;
+  technician_name?: string;
+  technician_phone?: string;
   admin_notes?: string;
   created_at: string;
   updated_at: string;
+  tracking_code?: string;
+}
+
+interface Technician {
+  id: string;
+  full_name: string;
+  phone: string;
+  email?: string;
+  skills: string[];
+  location: {
+    lat: number;
+    lng: number;
+    address?: string;
+  };
+  status: 'available' | 'busy' | 'offline';
+  rating?: number;
+  total_reviews?: number;
 }
 
 const AdminDashboard = () => {
@@ -55,6 +88,9 @@ const AdminDashboard = () => {
     assigned_technician: "",
     admin_notes: "",
   });
+  const [activeTab, setActiveTab] = useState("pending");
+  const [isAssigningTech, setIsAssigningTech] = useState(false);
+  const [technicians, setTechnicians] = useState<Technician[]>([]);
 
   const statusOptions = [
     { value: "pending", label: "بانتظار التأكيد", color: "bg-yellow-500" },
@@ -64,11 +100,18 @@ const AdminDashboard = () => {
     { value: "cancelled", label: "تم الإلغاء", color: "bg-red-500" },
   ];
 
-  const serviceTypeLabels = {
+  const serviceTypeLabels: Record<string, string> = {
     plumbing: "سباكة",
     electrical: "كهرباء",
     ac: "تكييف",
     other: "أخرى",
+  };
+
+  const serviceTypeIcons: Record<string, string> = {
+    plumbing: "🚰",
+    electrical: "🔌",
+    ac: "❄️",
+    other: "🔧",
   };
 
   const timeLabels = {
@@ -76,8 +119,46 @@ const AdminDashboard = () => {
     evening: "فترة مسائية (4 م - 8 م)",
   };
 
+  // Set up real-time subscription
   useEffect(() => {
     fetchRequests();
+    
+    // Subscribe to real-time updates
+    const subscription = supabase
+      .channel('service_requests_changes')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'service_requests' 
+        }, 
+        (payload) => {
+          console.log('Change received!', payload);
+          fetchRequests();
+        }
+      )
+      .subscribe();
+
+    // Fetch technicians
+    const fetchTechnicians = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('technicians')
+          .select('*');
+        
+        if (error) throw error;
+        setTechnicians(data || []);
+      } catch (error) {
+        console.error('Error fetching technicians:', error);
+      }
+    };
+    
+    fetchTechnicians();
+
+    // Cleanup subscription on component unmount
+    return () => {
+      supabase.removeChannel(subscription);
+    };
   }, []);
 
   const fetchRequests = async () => {
@@ -143,6 +224,63 @@ const AdminDashboard = () => {
     );
   };
 
+  const handleAssignTechnician = async (technicianId: string) => {
+    if (!selectedRequest) return;
+    
+    try {
+      setIsAssigningTech(true);
+      const technician = technicians.find(t => t.id === technicianId);
+      
+      const { error } = await supabase
+        .from('service_requests')
+        .update({ 
+          assigned_technician: technicianId,
+          technician_name: technician?.full_name,
+          technician_phone: technician?.phone,
+          status: 'in_progress',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', selectedRequest.id);
+
+      if (error) throw error;
+
+      // Update technician status to busy
+      await supabase
+        .from('technicians')
+        .update({ status: 'busy' })
+        .eq('id', technicianId);
+
+      toast({
+        title: "تم التعيين بنجاح",
+        description: `تم تعيين الفني ${technician?.full_name} للطلب بنجاح`,
+      });
+
+      setSelectedRequest(null);
+      fetchRequests();
+    } catch (error) {
+      console.error('Error assigning technician:', error);
+      toast({
+        title: "خطأ في التعيين",
+        description: "حدث خطأ أثناء محاولة تعيين الفني",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAssigningTech(false);
+    }
+  };
+
+  const filteredRequests = requests.filter(request => {
+    if (activeTab === 'all') return true;
+    return request.status === activeTab;
+  });
+
+  const getTimeAgo = (dateString: string) => {
+    return formatDistanceToNow(new Date(dateString), { 
+      addSuffix: true,
+      locale: ar,
+    });
+  };
+
   const handleViewRequest = (request: ServiceRequest) => {
     setSelectedRequest(request);
     setUpdateData({
@@ -163,41 +301,149 @@ const AdminDashboard = () => {
     );
   }
 
+  // ... (previous imports remain the same) ...
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b bg-white sticky top-0 z-50 shadow-soft">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-primary">لوحة تحكم الإدارة</h1>
-            <Button onClick={fetchRequests} variant="outline" size="sm">
-              <RefreshCw className="w-4 h-4 mr-2" />
-              تحديث
-            </Button>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold text-primary">لوحة تحكم الإدارة</h1>
+              <p className="text-sm text-muted-foreground mt-1">
+                آخر تحديث: {new Date().toLocaleTimeString('ar-SA')}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button onClick={fetchRequests} variant="outline" size="sm">
+                <RefreshCw className="w-4 h-4 ml-2" />
+                تحديث
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                {requests.length} طلب
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
       <div className="container mx-auto px-4 py-8">
         {/* Statistics */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {statusOptions.map((status) => {
             const count = requests.filter(r => r.status === status.value).length;
+            const isActive = activeTab === status.value;
             return (
-              <Card key={status.value}>
-                <CardContent className="p-4 text-center">
-                  <div className={`w-12 h-12 rounded-full ${status.color} mx-auto mb-2 flex items-center justify-center`}>
-                    <span className="text-white font-bold text-lg">{count}</span>
-                  </div>
-                  <h3 className="font-semibold text-sm">{status.label}</h3>
-                </CardContent>
-              </Card>
+              <motion.div 
+                key={status.value}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => setActiveTab(status.value)}
+                className="cursor-pointer"
+              >
+                <Card className={`transition-colors ${isActive ? 'border-primary bg-primary/5' : ''}`}>
+                  <CardContent className="p-3 text-center">
+                    <div className={`w-10 h-10 rounded-full ${status.color} mx-auto mb-2 flex items-center justify-center`}>
+                      <span className="text-white font-bold">{count}</span>
+                    </div>
+                    <h3 className="font-medium text-sm">{status.label}</h3>
+                  </CardContent>
+                </Card>
+              </motion.div>
             );
           })}
         </div>
 
-        {/* Requests Table */}
+        {/* Requests List */}
         <Card>
+          <div className="p-4 border-b">
+            <h2 className="text-lg font-semibold">
+              {activeTab === 'all' ? 'جميع الطلبات' : statusOptions.find(s => s.value === activeTab)?.label}
+              <span className="text-sm text-muted-foreground mr-2">
+                ({filteredRequests.length})
+              </span>
+            </h2>
+          </div>
+          
+          <div className="divide-y">
+            {filteredRequests.length === 0 ? (
+              <div className="p-8 text-center text-muted-foreground">
+                لا توجد طلبات متاحة
+              </div>
+            ) : (
+              <AnimatePresence>
+                {filteredRequests.map((request) => (
+                  <motion.div
+                    key={request.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-4 hover:bg-muted/50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-start gap-3">
+                        <div className="text-2xl mt-1">
+                          {serviceTypeIcons[request.service_type] || '🔧'}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium">{request.full_name}</h3>
+                            <span className="text-muted-foreground text-sm">
+                              {getTimeAgo(request.created_at)}
+                            </span>
+                            {getStatusBadge(request.status)}
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {request.location?.neighborhood || request.location?.address || 'لا يوجد عنوان'}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-sm">
+                              {serviceTypeLabels[request.service_type] || 'خدمة أخرى'}
+                            </span>
+                            {request.tracking_code && (
+                              <Badge variant="outline" className="text-xs font-mono">
+                                {request.tracking_code}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => handleViewRequest(request)}
+                        >
+                          <Eye className="w-4 h-4 ml-1" />
+                          عرض
+                        </Button>
+                        {request.status === 'pending' && (
+                          <Button 
+                            variant="default" 
+                            size="sm"
+                            onClick={() => {
+                              setSelectedRequest(request);
+                              setUpdateData({
+                                status: 'confirmed',
+                                assigned_technician: '',
+                                admin_notes: request.admin_notes || ''
+                              });
+                            }}
+                          >
+                            <UserPlus className="w-4 h-4 ml-1" />
+                            تعيين فني
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            )}
+          </div>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Settings className="w-5 h-5" />
